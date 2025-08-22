@@ -131,6 +131,8 @@ export default function RoomPage() {
   const [currentRound, setCurrentRound] = useState(1)
   const [gameStatus, setGameStatus] = useState<'waiting' | 'playing' | 'voting' | 'finished'>('waiting')
   const [winner, setWinner] = useState<'A' | 'B' | null>(null)
+  const [revealedTargetId, setRevealedTargetId] = useState<string | null>(null)
+  const [revealedCount, setRevealedCount] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const lastNotifiedPlayerIdRef = useRef<string | null>(null)
@@ -334,10 +336,14 @@ export default function RoomPage() {
           // Reuse existing player row instead of inserting a new one
           setCurrentPlayer(existingSame);
           await fetchPlayers();
+          joiningRef.current = false
           return;
         }
 
-        if (existingPlayers && existingPlayers.length >= roomData.max_players) {
+        // Count only active players when determining if room is full
+        const activeCount = existingPlayers?.filter(p => p.is_active).length || 0;
+        if (activeCount >= roomData.max_players) {
+          joiningRef.current = false
           setError('Room is full');
           return;
         }
@@ -456,12 +462,23 @@ export default function RoomPage() {
     if (!room || !isHost) return
 
     try {
-      await supabase
+      // Update room status to voting so players can vote immediately
+      const { data, error } = await supabase
         .from('rooms')
-        .update({ status: 'playing' })
+        .update({ status: 'voting' })
         .eq('id', room.id)
-    } catch (error) {
-      console.error('Error starting game:', error)
+        .select()
+        .single();
+      if (error) throw error
+      // update local state immediately
+      setRoom(data)
+      setGameStatus('voting')
+      setCurrentRound(1)
+      setVotes([])
+      setRevealedTargetId(null)
+      setRevealedCount(null)
+    } catch (err) {
+      console.error('Error starting game:', err)
     }
   }
 
@@ -481,8 +498,14 @@ export default function RoomPage() {
   const castVote = async (targetPlayerId: string) => {
     if (!currentPlayer || !room) return
 
+    // Prevent double voting per round
+    if (votes.some(v => v.voter_id === currentPlayer.id && v.round === currentRound)) {
+      console.warn('User already voted this round')
+      return
+    }
+
     try {
-      await supabase
+      const { data, error } = await supabase
         .from('votes')
         .insert({
           room_id: room.id,
@@ -490,8 +513,52 @@ export default function RoomPage() {
           target_id: targetPlayerId,
           round: currentRound
         })
-    } catch (error) {
-      console.error('Error casting vote:', error)
+        .select()
+        .single();
+      if (error) throw error
+      // update local votes immediately
+      setVotes(prev => (data ? [...prev, data] : prev))
+    } catch (err) {
+      console.error('Error casting vote:', err)
+    }
+  }
+
+  // Reveal the current highest voted target (host only)
+  const revealHighest = () => {
+    if (!room) return
+    if (votes.length === 0) return
+    const voteCounts: { [key: string]: number } = {}
+    votes.forEach(v => {
+      voteCounts[v.target_id] = (voteCounts[v.target_id] || 0) + 1
+    })
+    const maxVotes = Math.max(...Object.values(voteCounts))
+    const topTargetId = Object.keys(voteCounts).find(id => voteCounts[id] === maxVotes) || null
+    setRevealedTargetId(topTargetId)
+    setRevealedCount(maxVotes)
+  }
+
+  const finalizeElimination = async () => {
+    if (!revealedTargetId || !room) return
+    try {
+      await supabase
+        .from('players')
+        .update({ is_active: false })
+        .eq('id', revealedTargetId)
+      // clear votes for current round
+      await supabase
+        .from('votes')
+        .delete()
+        .eq('room_id', room.id)
+        .eq('round', currentRound)
+      // advance round
+      setCurrentRound(prev => prev + 1)
+      setVotes([])
+      setRevealedTargetId(null)
+      setRevealedCount(null)
+      // Refresh players
+      await fetchPlayers()
+    } catch (err) {
+      console.error('Error finalizing elimination:', err)
     }
   }
 
@@ -551,7 +618,7 @@ export default function RoomPage() {
   }
 
   const hasVoted = () => {
-    return votes.some(vote => vote.voter_id === currentPlayer?.id)
+    return votes.some(vote => vote.voter_id === currentPlayer?.id && vote.round === currentRound)
   }
 
   const canVoteFor = (playerId: string) => {
@@ -664,9 +731,42 @@ export default function RoomPage() {
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Host Controls</h3>
                 <p className="text-gray-600">
-                  {activePlayers.length >= 4 ? 'Ready to start the game!' : 'Need at least 4 players'}
+                  {activePlayers.length >= 3 ? 'Ready to start the game!' : 'Need at least 3 players'}
                 </p>
               </div>
+              <div className="space-x-2">
+                <button
+                  disabled={activePlayers.length < 3}
+                  onClick={() => startGame()}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md disabled:opacity-50"
+                >
+                  Start Game
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {isHost && gameStatus === 'voting' && (
+          <div className="bg-white rounded-lg shadow-lg p-6 mb-6 flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-semibold">Voting Controls</h3>
+              <p className="text-sm text-gray-600">Votes cast: {votes.length}/{activePlayers.length}</p>
+            </div>
+            <div className="space-x-2">
+              <button
+                disabled={votes.length === 0}
+                onClick={revealHighest}
+                className="px-4 py-2 bg-yellow-500 text-white rounded-md disabled:opacity-50"
+              >
+                Reveal Highest
+              </button>
+              <button
+                disabled={!revealedTargetId}
+                onClick={finalizeElimination}
+                className="px-4 py-2 bg-red-600 text-white rounded-md disabled:opacity-50"
+              >
+                Finalize Elimination
+              </button>
             </div>
           </div>
         )}
@@ -692,6 +792,8 @@ export default function RoomPage() {
                     canVoteFor={canVoteFor(player.id)}
                     onVote={castVote}
                     showGroup={true}
+                    // show host whether this player has been voted by current user
+                    // ...no change to PlayerCard props signature, we use voteCount to show votes
                   />
                 ))}
               </div>
