@@ -134,6 +134,7 @@ export default function RoomPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const lastNotifiedPlayerIdRef = useRef<string | null>(null)
+  const joiningRef = useRef(false)
 
   useEffect(() => {
     initializeRoom()
@@ -176,15 +177,26 @@ export default function RoomPage() {
       .order('created_at');
     if (playersError) throw playersError;
     if (playersData) {
+      console.log('[fetchPlayers] fetched', playersData.length, 'players')
       setPlayers(playersData);
       if (gameStatus !== 'waiting') {
         checkWinCondition(playersData);
       }
     }
-  } catch (error) {
-    console.error('Error fetching players:', error);
+  } catch (err) {
+    console.error('Error fetching players:', err);
+    setError('Error fetching players')
   }
 };
+
+  // Polling fallback: re-fetch players every 3s while in a room to handle missed realtime events
+  useEffect(() => {
+    if (!room) return;
+    const interval = setInterval(() => {
+      fetchPlayers().catch(e => console.error('Polling fetchPlayers failed', e))
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [room])
 
   // Fix: Only create host player if not already present and only if currentPlayer is not set
   const initializeRoom = async () => {
@@ -290,6 +302,12 @@ export default function RoomPage() {
         await fetchPlayers();
       } else {
         // Join existing room
+        // Prevent multiple concurrent join attempts from creating duplicate player rows
+        if (joiningRef.current) {
+          console.log('initializeRoom: join already in progress, skipping duplicate attempt')
+          return
+        }
+        joiningRef.current = true
         const { data: roomData, error: roomError } = await supabase
           .from('rooms')
           .select('*')
@@ -308,6 +326,17 @@ export default function RoomPage() {
           .from('players')
           .select('*')
           .eq('room_id', roomData.id);
+
+        // Prevent duplicate inserts: if a player with same name (non-host) already exists, use it
+        const normalizedName = (playerName || 'Player').trim();
+        const existingSame = existingPlayers?.find(p => String(p.name).trim() === normalizedName && !p.is_host);
+        if (existingSame) {
+          // Reuse existing player row instead of inserting a new one
+          setCurrentPlayer(existingSame);
+          await fetchPlayers();
+          return;
+        }
+
         if (existingPlayers && existingPlayers.length >= roomData.max_players) {
           setError('Room is full');
           return;
@@ -332,6 +361,7 @@ export default function RoomPage() {
         if (playerError) throw playerError;
         setCurrentPlayer(playerData);
         await fetchPlayers();
+        joiningRef.current = false
       }
     } catch (error) {
       console.error('Error initializing room:', error);
@@ -528,6 +558,17 @@ export default function RoomPage() {
     return playerId !== currentPlayer?.id && !hasVoted()
   }
 
+  // Map internal group codes to user-facing labels
+  const getGroupLabel = (group?: string | null) => {
+    if (!group) return 'No Group'
+    return group === 'A' ? 'Wolf' : group === 'B' ? 'Villagers' : String(group)
+  }
+  
+  const getWinnerLabel = (w?: 'A' | 'B' | null) => {
+    if (!w) return ''
+    return w === 'A' ? 'Wolf' : 'Villagers'
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -607,10 +648,10 @@ export default function RoomPage() {
             <div className="text-center">
               <Trophy className="h-16 w-16 text-yellow-500 mx-auto mb-4" />
               <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                Group {winner} Wins!
+                {getWinnerLabel(winner)} Wins!
               </h2>
               <p className="text-gray-600">
-                Congratulations to all players in Group {winner}!
+                Congratulations to all players in {getWinnerLabel(winner)}!
               </p>
             </div>
           </div>
@@ -637,7 +678,7 @@ export default function RoomPage() {
             <div className="bg-white rounded-lg shadow-lg p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
                 <Crown className="h-5 w-5 mr-2 text-blue-600" />
-                Group A ({groupAPlayers.length})
+                {getGroupLabel('A')} ({groupAPlayers.length})
               </h3>
               <div className="space-y-3">
                 {groupAPlayers.map((player) => (
@@ -659,7 +700,7 @@ export default function RoomPage() {
             <div className="bg-white rounded-lg shadow-lg p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
                 <Crown className="h-5 w-5 mr-2 text-red-600" />
-                Group B ({groupBPlayers.length})
+                {getGroupLabel('B')} ({groupBPlayers.length})
               </h3>
               <div className="space-y-3">
                 {groupBPlayers.map((player) => (

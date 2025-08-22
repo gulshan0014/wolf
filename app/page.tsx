@@ -141,7 +141,7 @@ function CreateRoomModal({ onClose }: { onClose: () => void }) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Max Players in Group A
+              Max Players To be WOLF
             </label>
             <input
               type="number"
