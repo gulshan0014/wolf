@@ -40,6 +40,10 @@ function PlayerCard({
 }: PlayerCardProps) {
   const isCurrentPlayer = currentPlayer?.id === player.id
   const isHost = player.is_host
+  // Debug: trace properties that affect vote button visibility
+  if (process.env.NODE_ENV !== 'production') {
+    console.debug('[PlayerCard] render', { playerId: player.id, isCurrentPlayer, isHost, canVoteFor, hasVoted })
+  }
   return (
     <div className={`p-4 rounded-lg border-2 ${
       isCurrentPlayer
@@ -75,16 +79,17 @@ function PlayerCard({
             )}
           </div>
         </div>
-        {gameStatus === 'voting' && !isCurrentPlayer && canVoteFor && !hasVoted && (
+        {/* Voting controls: allow changing vote label when user already voted */}
+        {gameStatus === 'voting' && !isCurrentPlayer && canVoteFor && (
           <button
             onClick={() => onVote(player.id)}
             className="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700"
             disabled={gameStatus !== 'voting'}
           >
-            Vote
+            {hasVoted ? 'Change Vote' : 'Vote'}
           </button>
         )}
-        {gameStatus === 'voting' && hasVoted && !isCurrentPlayer && (
+        {gameStatus === 'voting' && !isCurrentPlayer && hasVoted && (
           <XCircle className="h-5 w-5 text-gray-400" />
         )}
       </div>
@@ -133,6 +138,7 @@ export default function RoomPage() {
   const [winner, setWinner] = useState<'A' | 'B' | null>(null)
   const [revealedTargetId, setRevealedTargetId] = useState<string | null>(null)
   const [revealedCount, setRevealedCount] = useState<number | null>(null)
+  const [allVotesIn, setAllVotesIn] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const lastNotifiedPlayerIdRef = useRef<string | null>(null)
@@ -244,6 +250,11 @@ export default function RoomPage() {
             if (existingRoomError) throw existingRoomError;
             roomData = existingRoom;
             setRoom(roomData);
+            // If the persisted room already contains a reveal, show it
+            if ((roomData as any).revealed_target_id) {
+              setRevealedTargetId((roomData as any).revealed_target_id)
+              setRevealedCount((roomData as any).revealed_count ?? null)
+            }
             console.log('Room already exists, using existing:', roomData);
           } else if (newRoomError) {
             throw newRoomError;
@@ -276,6 +287,10 @@ export default function RoomPage() {
           if (newRoomError) throw newRoomError;
           roomData = newRoom;
           setRoom(roomData);
+          if ((roomData as any).revealed_target_id) {
+            setRevealedTargetId((roomData as any).revealed_target_id)
+            setRevealedCount((roomData as any).revealed_count ?? null)
+          }
           console.log('Room created with generated code:', roomData);
         }
         window.history.replaceState(null, '', `/room/${actualRoomCode}?host=true&roomName=${encodeURIComponent(roomName || 'Wolf Game Room')}&maxPlayers=${maxPlayers}&maxGroupA=${maxGroupA}`);
@@ -390,6 +405,14 @@ export default function RoomPage() {
         const newRoom = payload.new as Room
         setRoom(newRoom)
         setGameStatus(newRoom.status)
+        // If the DB includes a revealed target, reflect it in local state so all clients see the reveal
+        if ((newRoom as any).revealed_target_id) {
+          setRevealedTargetId((newRoom as any).revealed_target_id)
+          setRevealedCount((newRoom as any).revealed_count ?? null)
+        } else {
+          setRevealedTargetId(null)
+          setRevealedCount(null)
+        }
       })
       .subscribe()
 
@@ -425,7 +448,10 @@ export default function RoomPage() {
         
         if (updatedVotes) {
           setVotes(updatedVotes)
-          processVotingRound(updatedVotes)
+          // mark whether all active players (excluding host) have voted for this round
+          const activePlayersCount = players.filter(p => p.is_active && !p.is_host).length
+          setAllVotesIn(updatedVotes.length >= activePlayersCount)
+          // do not auto-eliminate here — host must click Reveal to show results and Finalize to eliminate
         }
       })
       .subscribe()
@@ -475,6 +501,7 @@ export default function RoomPage() {
       setGameStatus('voting')
       setCurrentRound(1)
       setVotes([])
+      setAllVotesIn(false)
       setRevealedTargetId(null)
       setRevealedCount(null)
     } catch (err) {
@@ -497,34 +524,70 @@ export default function RoomPage() {
 
   const castVote = async (targetPlayerId: string) => {
     if (!currentPlayer || !room) return
-
-    // Prevent double voting per round
-    if (votes.some(v => v.voter_id === currentPlayer.id && v.round === currentRound)) {
-      console.warn('User already voted this round')
-      return
-    }
+    // Host cannot vote
+    if (currentPlayer.is_host === true) return
 
     try {
-      const { data, error } = await supabase
+      // Check if the user already has a vote this round
+      const { data: existingVote, error: existingErr } = await supabase
         .from('votes')
-        .insert({
-          room_id: room.id,
-          voter_id: currentPlayer.id,
-          target_id: targetPlayerId,
-          round: currentRound
-        })
-        .select()
-        .single();
-      if (error) throw error
-      // update local votes immediately
-      setVotes(prev => (data ? [...prev, data] : prev))
+        .select('*')
+        .eq('room_id', room.id)
+        .eq('voter_id', currentPlayer.id)
+        .eq('round', currentRound)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+
+      if (existingVote) {
+        // Update existing vote to change target
+        const { data: updated, error: updateErr } = await supabase
+          .from('votes')
+          .update({ target_id: targetPlayerId })
+          .eq('id', existingVote.id)
+          .select()
+          .single();
+        if (updateErr) throw updateErr;
+        setVotes(prev => prev.map(v => v.id === updated.id ? updated : v));
+      } else {
+        // Insert new vote
+        const { data, error } = await supabase
+          .from('votes')
+          .insert({
+            room_id: room.id,
+            voter_id: currentPlayer.id,
+            target_id: targetPlayerId,
+            round: currentRound
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        setVotes(prev => (data ? [...prev, data] : prev));
+      }
     } catch (err) {
-      console.error('Error casting vote:', err)
+      console.error('Error casting/updating vote:', err)
+    }
+  }
+
+  const cancelVote = async () => {
+    if (!currentPlayer || !room) return
+    try {
+      const { error } = await supabase
+        .from('votes')
+        .delete()
+        .eq('room_id', room.id)
+        .eq('voter_id', currentPlayer.id)
+        .eq('round', currentRound)
+      if (error) throw error
+      // update local state
+      setVotes(prev => prev.filter(v => !(v.voter_id === currentPlayer.id && v.round === currentRound)))
+      setAllVotesIn(false)
+    } catch (err) {
+      console.error('Error cancelling vote:', err)
     }
   }
 
   // Reveal the current highest voted target (host only)
-  const revealHighest = () => {
+  const revealHighest = async () => {
     if (!room) return
     if (votes.length === 0) return
     const voteCounts: { [key: string]: number } = {}
@@ -533,8 +596,29 @@ export default function RoomPage() {
     })
     const maxVotes = Math.max(...Object.values(voteCounts))
     const topTargetId = Object.keys(voteCounts).find(id => voteCounts[id] === maxVotes) || null
-    setRevealedTargetId(topTargetId)
-    setRevealedCount(maxVotes)
+    // Persist the reveal to the DB so everyone sees it via realtime
+    try {
+      const { data: updatedRoom, error } = await supabase
+        .from('rooms')
+        .update({ revealed_target_id: topTargetId, revealed_count: maxVotes })
+        .eq('id', room.id)
+        .select()
+        .single();
+      if (error) {
+        // If DB doesn't allow the column or update fails, fall back to local state
+        console.warn('Failed to persist reveal to DB, falling back to local state:', error)
+        setRevealedTargetId(topTargetId)
+        setRevealedCount(maxVotes)
+        return
+      }
+      // Apply persisted reveal
+      setRevealedTargetId((updatedRoom as any).revealed_target_id)
+      setRevealedCount((updatedRoom as any).revealed_count ?? maxVotes)
+    } catch (err) {
+      console.error('Error persisting reveal:', err)
+      setRevealedTargetId(topTargetId)
+      setRevealedCount(maxVotes)
+    }
   }
 
   const finalizeElimination = async () => {
@@ -550,9 +634,19 @@ export default function RoomPage() {
         .delete()
         .eq('room_id', room.id)
         .eq('round', currentRound)
+      // Clear persisted reveal on the room if supported
+      try {
+        await supabase
+          .from('rooms')
+          .update({ revealed_target_id: null, revealed_count: null })
+          .eq('id', room.id)
+      } catch (clearErr) {
+        console.warn('Failed to clear persisted reveal on room:', clearErr)
+      }
       // advance round
       setCurrentRound(prev => prev + 1)
       setVotes([])
+      setAllVotesIn(false)
       setRevealedTargetId(null)
       setRevealedCount(null)
       // Refresh players
@@ -565,32 +659,53 @@ export default function RoomPage() {
   const processVotingRound = async (currentVotes: Vote[]) => {
     if (!room) return
 
-    const activePlayers = players.filter(p => p.is_active && !p.is_host) // Exclude host from voting
-    if (currentVotes.length < activePlayers.length) return
-
-    // Count votes
-    const voteCounts: { [key: string]: number } = {}
-    currentVotes.forEach(vote => {
-      voteCounts[vote.target_id] = (voteCounts[vote.target_id] || 0) + 1
-    })
-
-    // Find player with most votes
-    const maxVotes = Math.max(...Object.values(voteCounts))
-    const eliminatedPlayerId = Object.keys(voteCounts).find(
-      playerId => voteCounts[playerId] === maxVotes
-    )
-
-    if (eliminatedPlayerId) {
-      // Eliminate player
-      await supabase
-        .from('players')
-        .update({ is_active: false })
-        .eq('id', eliminatedPlayerId)
-
-      // Move to next round
-      setCurrentRound(prev => prev + 1)
-      setVotes([])
+    // Only mark whether all votes are in. Do not auto-eliminate — host must reveal and finalize.
+    // Treat is_host strictly === true to avoid truthy/coercion edge cases from DB
+    const activePlayers = players.filter(p => p.is_active && p.is_host !== true)
+    if (currentVotes.length < activePlayers.length) {
+      setAllVotesIn(false)
+      return
     }
+    setAllVotesIn(true)
+  }
+
+  // Helper: determine if a target player can be voted for by the current player
+  const canVoteFor = (playerId: string) => {
+    if (!currentPlayer) {
+      if (process.env.NODE_ENV !== 'production') console.debug('[canVoteFor] no currentPlayer', { playerId })
+      return false
+    }
+    // Host cannot vote at all
+    if (currentPlayer.is_host === true) {
+      if (process.env.NODE_ENV !== 'production') console.debug('[canVoteFor] currentPlayer is host - cannot vote', { playerId, currentPlayerId: currentPlayer.id })
+      return false
+    }
+    if (playerId === currentPlayer.id) {
+      if (process.env.NODE_ENV !== 'production') console.debug('[canVoteFor] target is self - cannot vote', { playerId })
+      return false
+    }
+    const target = players.find(p => p.id === playerId)
+    if (!target) {
+      if (process.env.NODE_ENV !== 'production') console.debug('[canVoteFor] target not found', { playerId })
+      return false
+    }
+    // target must be active and not a host
+    if (!target.is_active) {
+      if (process.env.NODE_ENV !== 'production') console.debug('[canVoteFor] target not active', { playerId })
+      return false
+    }
+    if (target.is_host === true) {
+      if (process.env.NODE_ENV !== 'production') console.debug('[canVoteFor] target is host - cannot vote', { playerId })
+      return false
+    }
+    if (process.env.NODE_ENV !== 'production') console.debug('[canVoteFor] allowed', { playerId, currentPlayerId: currentPlayer.id })
+    return true
+  }
+
+  const hasVoted = () => {
+    const result = votes.some(vote => vote.voter_id === currentPlayer?.id && vote.round === currentRound)
+    if (process.env.NODE_ENV !== 'production') console.debug('[hasVoted]', { voterId: currentPlayer?.id, round: currentRound, result })
+    return result
   }
 
   const checkWinCondition = (currentPlayers: Player[]) => {
@@ -617,14 +732,6 @@ export default function RoomPage() {
     return votes.filter(vote => vote.target_id === playerId).length
   }
 
-  const hasVoted = () => {
-    return votes.some(vote => vote.voter_id === currentPlayer?.id && vote.round === currentRound)
-  }
-
-  const canVoteFor = (playerId: string) => {
-    return playerId !== currentPlayer?.id && !hasVoted()
-  }
-
   // Map internal group codes to user-facing labels
   const getGroupLabel = (group?: string | null) => {
     if (!group) return 'No Group'
@@ -636,40 +743,12 @@ export default function RoomPage() {
     return w === 'A' ? 'Wolf' : 'Villagers'
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading room...</p>
-        </div>
-      </div>
-    )
-  }
-
-  if (error) {
-    const errorMsg = error;
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Error</h2>
-          <p className="text-gray-600 mb-4">{errorMsg}</p>
-          <button
-            onClick={() => window.location.href = '/'}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-          >
-            Go Home
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  const activePlayers = players.filter(p => p.is_active && !p.is_host) // Exclude host from active players
+  // When rendering active players everywhere, exclude host explicitly
+  const activePlayers = players.filter(p => p.is_active && p.is_host !== true)
   const groupAPlayers = activePlayers.filter(p => p.player_group === 'A')
   const groupBPlayers = activePlayers.filter(p => p.player_group === 'B')
 
+  // Voting Status area: add Cancel Vote button for current player when they've voted
   return (
     <div className="min-h-screen p-4">
       <div className="max-w-4xl mx-auto">
@@ -754,22 +833,22 @@ export default function RoomPage() {
             </div>
             <div className="space-x-2">
               <button
-                disabled={votes.length === 0}
+                disabled={!allVotesIn}
                 onClick={revealHighest}
                 className="px-4 py-2 bg-yellow-500 text-white rounded-md disabled:opacity-50"
               >
                 Reveal Highest
               </button>
-              <button
-                disabled={!revealedTargetId}
-                onClick={finalizeElimination}
-                className="px-4 py-2 bg-red-600 text-white rounded-md disabled:opacity-50"
-              >
-                Finalize Elimination
-              </button>
-            </div>
-          </div>
-        )}
+               <button
+                 disabled={!revealedTargetId}
+                 onClick={finalizeElimination}
+                 className="px-4 py-2 bg-red-600 text-white rounded-md disabled:opacity-50"
+               >
+                 Finalize Elimination
+               </button>
+             </div>
+           </div>
+         )}
 
         {/* Players List */}
         {isHost ? (
@@ -869,10 +948,36 @@ export default function RoomPage() {
                 </div>
               ))}
             </div>
+            {!allVotesIn ? (
+              <div className="mt-4 text-center text-gray-600">Waiting for other players to vote...</div>
+            ) : (
+              <div className="mt-4 text-center">
+                <CheckCircle className="h-6 w-6 text-yellow-500 mx-auto mb-2" />
+                <p className="text-yellow-600 font-medium">All votes are in — host can reveal the result.</p>
+              </div>
+            )}
             {hasVoted() && (
               <div className="mt-4 text-center">
                 <CheckCircle className="h-6 w-6 text-green-500 mx-auto mb-2" />
                 <p className="text-green-600 font-medium">You have voted!</p>
+                <div className="mt-2">
+                  <button
+                    onClick={cancelVote}
+                    className="px-3 py-1 bg-gray-200 text-gray-800 rounded-md text-sm hover:bg-gray-300"
+                  >
+                    Cancel Vote
+                  </button>
+                </div>
+              </div>
+            )}
+            {/* Show revealed result once host clicks Reveal */}
+            {revealedTargetId && (
+              <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-center">
+                <div className="text-sm text-yellow-800 font-medium">Host revealed the result</div>
+                <div className="text-lg font-semibold text-yellow-900 mt-1">
+                  {players.find(p => p.id === revealedTargetId)?.name || 'Unknown'}
+                </div>
+                <div className="text-sm text-yellow-700">Votes: {revealedCount ?? 0}</div>
               </div>
             )}
           </div>
