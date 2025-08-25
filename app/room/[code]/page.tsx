@@ -70,9 +70,11 @@ export default function RoomPage() {
     initializeRoom()
   }
 
-  const handleJoined = (code: string) => {
+  const handleJoined = (code: string, player?: any) => {
     const newUrl = `/room/${code}`
     window.history.replaceState(null, '', newUrl)
+    // Set current player immediately so user sees their group assignment
+    if (player) setCurrentPlayer(player)
     initializeRoom()
   }
 
@@ -686,6 +688,15 @@ export default function RoomPage() {
             <JoinRoom onJoined={handleJoined} />
           </div>
         )}
+        
+        {/* Show the current player's assigned group immediately after joining */}
+        {currentPlayer && currentPlayer.player_group && !currentPlayer.is_host && (
+          <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-center">
+            <div className="text-sm text-blue-800">You were assigned to</div>
+            <div className="text-lg font-semibold text-blue-900">{getGroupLabel(currentPlayer.player_group)}</div>
+          </div>
+        )}
+
         {/* Players List */}
         {isHost ? (
           <HostView

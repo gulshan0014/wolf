@@ -2,9 +2,10 @@
 
 import React, { useState } from 'react'
 import { joinRoom } from './roomActions'
+import type { Player } from '@/lib/supabase'
 
 interface JoinRoomProps {
-  onJoined: (roomCode: string) => void
+  onJoined: (roomCode: string, player?: Player) => void
 }
 
 export default function JoinRoom({ onJoined }: JoinRoomProps) {
@@ -18,7 +19,7 @@ export default function JoinRoom({ onJoined }: JoinRoomProps) {
     setError(null)
     try {
       const { room, player } = await joinRoom({ roomCode: roomCode.trim(), playerName })
-      onJoined(room.code)
+      onJoined(room.code, player)
     } catch (err: any) {
       console.error('join failed', err)
       setError(err?.message || 'Failed to join room')
