@@ -3,99 +3,15 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import { supabase, type Room, type Player, type Vote } from '@/lib/supabase'
-import { 
-  Users, 
-  Play, 
-  Crown, 
-  UserCheck, 
-  UserX, 
-  Trophy,
-  AlertCircle,
-  CheckCircle,
-  XCircle
-} from 'lucide-react'
-
-// PlayerCard props interface
-interface PlayerCardProps {
-  player: Player
-  currentPlayer: Player | null
-  gameStatus: string
-  voteCount: number
-  hasVoted: boolean
-  canVoteFor: boolean
-  onVote: (playerId: string) => void
-  showGroup?: boolean
-}
-
-// PlayerCard component
-function PlayerCard({
-  player,
-  currentPlayer,
-  gameStatus,
-  voteCount,
-  hasVoted,
-  canVoteFor,
-  onVote,
-  showGroup = false
-}: PlayerCardProps) {
-  const isCurrentPlayer = currentPlayer?.id === player.id
-  const isHost = player.is_host
-  // Debug: trace properties that affect vote button visibility
-  if (process.env.NODE_ENV !== 'production') {
-    console.debug('[PlayerCard] render', { playerId: player.id, isCurrentPlayer, isHost, canVoteFor, hasVoted })
-  }
-  return (
-    <div className={`p-4 rounded-lg border-2 ${
-      isCurrentPlayer
-        ? 'border-blue-500 bg-blue-50'
-        : 'border-gray-200 bg-gray-50'
-    }`}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          {isHost ? (
-            <Crown className="h-5 w-5 text-yellow-500" />
-          ) : (
-            <Users className="h-5 w-5 text-gray-400" />
-          )}
-          <div>
-            <div className="font-medium text-gray-900">
-              {player.name}
-              {isCurrentPlayer && ' (You)'}
-            </div>
-            {showGroup && player.player_group && (
-              <div className="text-sm text-gray-600">
-                Group: {player.player_group}
-              </div>
-            )}
-            {showGroup && !player.player_group && (
-              <div className="text-sm text-gray-600">
-                Host (No Group)
-              </div>
-            )}
-            {gameStatus === 'playing' && (
-              <div className="text-sm text-gray-600">
-                Votes: {voteCount}
-              </div>
-            )}
-          </div>
-        </div>
-        {/* Voting controls: allow changing vote label when user already voted */}
-        {gameStatus === 'voting' && !isCurrentPlayer && canVoteFor && (
-          <button
-            onClick={() => onVote(player.id)}
-            className="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700"
-            disabled={gameStatus !== 'voting'}
-          >
-            {hasVoted ? 'Change Vote' : 'Vote'}
-          </button>
-        )}
-        {gameStatus === 'voting' && !isCurrentPlayer && hasVoted && (
-          <XCircle className="h-5 w-5 text-gray-400" />
-        )}
-      </div>
-    </div>
-  )
-}
+import { Users, Play, Crown, Trophy, AlertCircle, CheckCircle, XCircle } from 'lucide-react'
+import PlayerCard from './components/PlayerCard'
+import VotingStatus from './components/VotingStatus'
+import Header from './components/Header'
+import HostControls from './components/HostControls'
+import HostView from './components/HostView'
+import PlayersView from './components/PlayersView'
+import CreateRoom from './components/CreateRoom'
+import JoinRoom from './components/JoinRoom'
 
 export default function RoomPage() {
   // Utility: Generate a unique 6-character room code
@@ -752,32 +668,8 @@ export default function RoomPage() {
   return (
     <div className="min-h-screen p-4">
       <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">
-                {room?.room_name || 'Wolf Game Room'}
-              </h1>
-              <p className="text-gray-600">Room Code: {roomCode}</p>
-              <p className="text-gray-600">
-                {gameStatus === 'waiting' && 'Waiting for players...'}
-                {gameStatus === 'playing' && 'Game started - Ready for voting!'}
-                {gameStatus === 'voting' && `Round ${currentRound}`}
-                {gameStatus === 'finished' && 'Game Finished!'}
-              </p>
-            </div>
-            <div className="text-right">
-              <div className="text-sm text-gray-600">Players: {activePlayers.length}/{room?.max_players}</div>
-              {isHost && (
-                <div className="text-sm text-gray-600">
-                  Group A: {groupAPlayers.length} | Group B: {groupBPlayers.length}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
+        <Header room={room} roomCode={roomCode} gameStatus={gameStatus} currentRound={currentRound} activePlayersCount={activePlayers.length} maxPlayers={room?.max_players ?? null} isHost={isHost} groupA={groupAPlayers.length} groupB={groupBPlayers.length} />
+        <HostControls isHost={isHost} gameStatus={gameStatus} activePlayersCount={activePlayers.length} allVotesIn={allVotesIn} revealedTargetId={revealedTargetId} startGame={startGame} revealHighest={revealHighest} finalizeElimination={finalizeElimination} />
         {/* Game Status */}
         {gameStatus === 'waiting' && !isHost && (
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
@@ -803,184 +695,58 @@ export default function RoomPage() {
           </div>
         )}
 
-        {/* Host Controls */}
-        {isHost && gameStatus === 'waiting' && (
-          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900">Host Controls</h3>
-                <p className="text-gray-600">
-                  {activePlayers.length >= 3 ? 'Ready to start the game!' : 'Need at least 3 players'}
-                </p>
-              </div>
-              <div className="space-x-2">
-                <button
-                  disabled={activePlayers.length < 3}
-                  onClick={() => startGame()}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md disabled:opacity-50"
-                >
-                  Start Game
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        {isHost && gameStatus === 'voting' && (
-          <div className="bg-white rounded-lg shadow-lg p-6 mb-6 flex items-center justify-between">
-            <div>
-              <h3 className="text-lg font-semibold">Voting Controls</h3>
-              <p className="text-sm text-gray-600">Votes cast: {votes.length}/{activePlayers.length}</p>
-            </div>
-            <div className="space-x-2">
-              <button
-                disabled={!allVotesIn}
-                onClick={revealHighest}
-                className="px-4 py-2 bg-yellow-500 text-white rounded-md disabled:opacity-50"
-              >
-                Reveal Highest
-              </button>
-               <button
-                 disabled={!revealedTargetId}
-                 onClick={finalizeElimination}
-                 className="px-4 py-2 bg-red-600 text-white rounded-md disabled:opacity-50"
-               >
-                 Finalize Elimination
-               </button>
-             </div>
-           </div>
-         )}
-
         {/* Players List */}
         {isHost ? (
-          <div className="grid md:grid-cols-2 gap-6">
-            {/* Group A */}
-            <div className="bg-white rounded-lg shadow-lg p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <Crown className="h-5 w-5 mr-2 text-blue-600" />
-                {getGroupLabel('A')} ({groupAPlayers.length})
-              </h3>
-              <div className="space-y-3">
-                {groupAPlayers.map((player) => (
-                  <PlayerCard
-                    key={player.id}
-                    player={player}
-                    currentPlayer={currentPlayer}
-                    gameStatus={gameStatus}
-                    voteCount={getVoteCount(player.id)}
-                    hasVoted={hasVoted()}
-                    canVoteFor={canVoteFor(player.id)}
-                    onVote={castVote}
-                    showGroup={true}
-                    // show host whether this player has been voted by current user
-                    // ...no change to PlayerCard props signature, we use voteCount to show votes
-                  />
-                ))}
-              </div>
-            </div>
-            {/* Group B */}
-            <div className="bg-white rounded-lg shadow-lg p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <Crown className="h-5 w-5 mr-2 text-red-600" />
-                {getGroupLabel('B')} ({groupBPlayers.length})
-              </h3>
-              <div className="space-y-3">
-                {groupBPlayers.map((player) => (
-                  <PlayerCard
-                    key={player.id}
-                    player={player}
-                    currentPlayer={currentPlayer}
-                    gameStatus={gameStatus}
-                    voteCount={getVoteCount(player.id)}
-                    hasVoted={hasVoted()}
-                    canVoteFor={canVoteFor(player.id)}
-                    onVote={castVote}
-                    showGroup={true}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
+          <HostView
+            room={room}
+            roomCode={roomCode}
+            gameStatus={gameStatus}
+            currentRound={currentRound}
+            activePlayers={activePlayers}
+            players={players}
+            currentPlayer={currentPlayer}
+            votes={votes}
+            startGame={startGame}
+            revealHighest={revealHighest}
+            finalizeElimination={finalizeElimination}
+            getVoteCount={getVoteCount}
+            hasVoted={hasVoted}
+            canVoteFor={canVoteFor}
+            onVote={castVote}
+          />
         ) : (
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <Users className="h-5 w-5 mr-2 text-gray-600" />
-              All Players ({activePlayers.length})
-            </h3>
-            <div className="space-y-3">
-              {activePlayers.map((player) => (
-                <PlayerCard
-                  key={player.id}
-                  player={player}
-                  currentPlayer={currentPlayer}
-                  gameStatus={gameStatus}
-                  voteCount={getVoteCount(player.id)}
-                  hasVoted={hasVoted()}
-                  canVoteFor={canVoteFor(player.id)}
-                  onVote={castVote}
-                  showGroup={gameStatus === 'finished'}
-                />
-              ))}
-            </div>
-            {gameStatus === 'finished' && (
-              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  <strong>Your Group:</strong> {currentPlayer?.player_group}
-                </p>
-                <p className="text-sm text-blue-700 mt-1">
-                  Game finished! See all group assignments above.
-                </p>
-              </div>
-            )}
-          </div>
+          <PlayersView
+            room={room}
+            roomCode={roomCode}
+            gameStatus={gameStatus}
+            currentRound={currentRound}
+            activePlayers={activePlayers}
+            players={players}
+            currentPlayer={currentPlayer}
+            votes={votes}
+            getVoteCount={getVoteCount}
+            hasVoted={hasVoted}
+            canVoteFor={canVoteFor}
+            cancelVote={cancelVote}
+            allVotesIn={allVotesIn}
+            revealedTargetId={revealedTargetId}
+            revealedCount={revealedCount}
+            onVote={castVote}
+          />
         )}
 
         {/* Voting Status */}
         {gameStatus === 'voting' && (
-          <div className="bg-white rounded-lg shadow-lg p-6 mt-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Voting Status</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {activePlayers.map(player => (
-                <div key={player.id} className="text-center p-3 bg-gray-50 rounded-lg">
-                  <div className="font-medium text-gray-900">{player.name}</div>
-                  <div className="text-sm text-gray-600">
-                    Votes: {getVoteCount(player.id)}
-                  </div>
-                </div>
-              ))}
-            </div>
-            {!allVotesIn ? (
-              <div className="mt-4 text-center text-gray-600">Waiting for other players to vote...</div>
-            ) : (
-              <div className="mt-4 text-center">
-                <CheckCircle className="h-6 w-6 text-yellow-500 mx-auto mb-2" />
-                <p className="text-yellow-600 font-medium">All votes are in — host can reveal the result.</p>
-              </div>
-            )}
-            {hasVoted() && (
-              <div className="mt-4 text-center">
-                <CheckCircle className="h-6 w-6 text-green-500 mx-auto mb-2" />
-                <p className="text-green-600 font-medium">You have voted!</p>
-                <div className="mt-2">
-                  <button
-                    onClick={cancelVote}
-                    className="px-3 py-1 bg-gray-200 text-gray-800 rounded-md text-sm hover:bg-gray-300"
-                  >
-                    Cancel Vote
-                  </button>
-                </div>
-              </div>
-            )}
-            {/* Show revealed result once host clicks Reveal */}
-            {revealedTargetId && (
-              <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-center">
-                <div className="text-sm text-yellow-800 font-medium">Host revealed the result</div>
-                <div className="text-lg font-semibold text-yellow-900 mt-1">
-                  {players.find(p => p.id === revealedTargetId)?.name || 'Unknown'}
-                </div>
-                <div className="text-sm text-yellow-700">Votes: {revealedCount ?? 0}</div>
-              </div>
-            )}
-          </div>
+          <VotingStatus
+            activePlayers={activePlayers}
+            getVoteCount={getVoteCount}
+            allVotesIn={allVotesIn}
+            hasVoted={hasVoted()}
+            cancelVote={cancelVote}
+            revealedTargetId={revealedTargetId}
+            revealedCount={revealedCount}
+            players={players}
+          />
         )}
       </div>
     </div>
