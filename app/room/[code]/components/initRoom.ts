@@ -1,23 +1,16 @@
-import { useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 
-export function useInitRoomHelpers() {
-  const joiningRef = useRef(false)
-
-  async function generateUniqueRoomCode(): Promise<string> {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    let attempts = 0
-    const maxAttempts = 10
-    while (attempts < maxAttempts) {
-      let code = ''
-      for (let i = 0; i < 6; i++) code += chars.charAt(Math.floor(Math.random() * chars.length))
-      const { data: existingRoom, error } = await supabase.from('rooms').select('code').eq('code', code).maybeSingle()
-      if (error) throw error
-      if (!existingRoom) return code
-      attempts++
-    }
-    throw new Error('Unable to generate unique room code')
+export async function generateUniqueRoomCode(): Promise<string> {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  let attempts = 0
+  const maxAttempts = 10
+  while (attempts < maxAttempts) {
+    let code = ''
+    for (let i = 0; i < 6; i++) code += chars.charAt(Math.floor(Math.random() * chars.length))
+    const { data: existingRoom, error } = await supabase.from('rooms').select('code').eq('code', code).maybeSingle()
+    if (error) throw error
+    if (!existingRoom) return code
+    attempts++
   }
-
-  return { joiningRef, generateUniqueRoomCode }
+  throw new Error('Unable to generate unique room code')
 }

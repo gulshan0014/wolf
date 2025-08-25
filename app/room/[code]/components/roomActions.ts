@@ -1,7 +1,5 @@
 import { supabase } from '@/lib/supabase'
-import { useInitRoomHelpers } from './initRoom'
-
-const { generateUniqueRoomCode: _generateUniqueRoomCode } = useInitRoomHelpers() // NOTE: top-level invocation OK in this module scope for helper use
+import { generateUniqueRoomCode as _generateUniqueRoomCode } from './initRoom'
 
 export async function createRoomAndHost({ roomCode, roomName, maxPlayers = 8, maxGroupA = 4 }: { roomCode?: string | null, roomName?: string | null, maxPlayers?: number, maxGroupA?: number }) {
   let actualRoomCode = roomCode || null

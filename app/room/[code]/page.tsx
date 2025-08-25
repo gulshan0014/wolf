@@ -64,6 +64,18 @@ export default function RoomPage() {
     initializeRoom()
   }, [roomCode])
 
+  const handleCreated = (code: string) => {
+    const newUrl = `/room/${code}?host=true&roomName=${encodeURIComponent(roomName || 'Wolf Game Room')}&maxPlayers=${maxPlayers}&maxGroupA=${maxGroupA}`
+    window.history.replaceState(null, '', newUrl)
+    initializeRoom()
+  }
+
+  const handleJoined = (code: string) => {
+    const newUrl = `/room/${code}`
+    window.history.replaceState(null, '', newUrl)
+    initializeRoom()
+  }
+
   useEffect(() => {
     if (room) {
       setupRealtimeSubscriptions()
@@ -668,33 +680,12 @@ export default function RoomPage() {
   return (
     <div className="min-h-screen p-4">
       <div className="max-w-4xl mx-auto">
-        <Header room={room} roomCode={roomCode} gameStatus={gameStatus} currentRound={currentRound} activePlayersCount={activePlayers.length} maxPlayers={room?.max_players ?? null} isHost={isHost} groupA={groupAPlayers.length} groupB={groupBPlayers.length} />
-        <HostControls isHost={isHost} gameStatus={gameStatus} activePlayersCount={activePlayers.length} allVotesIn={allVotesIn} revealedTargetId={revealedTargetId} startGame={startGame} revealHighest={revealHighest} finalizeElimination={finalizeElimination} />
-        {/* Game Status */}
-        {gameStatus === 'waiting' && !isHost && (
-          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-            <div className="text-center">
-              <Play className="h-10 w-10 text-blue-600 mx-auto mb-2" />
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">Waiting for Host to Start the Game</h2>
-              <p className="text-gray-600">Please wait until the host starts the game.</p>
-            </div>
+        {!room && (
+          <div>
+            <CreateRoom onCreated={handleCreated} />
+            <JoinRoom onJoined={handleJoined} />
           </div>
         )}
-        {/* Game Status */}
-        {gameStatus === 'finished' && winner && (
-          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-            <div className="text-center">
-              <Trophy className="h-16 w-16 text-yellow-500 mx-auto mb-4" />
-              <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                {getWinnerLabel(winner)} Wins!
-              </h2>
-              <p className="text-gray-600">
-                Congratulations to all players in {getWinnerLabel(winner)}!
-              </p>
-            </div>
-          </div>
-        )}
-
         {/* Players List */}
         {isHost ? (
           <HostView
@@ -732,20 +723,6 @@ export default function RoomPage() {
             revealedTargetId={revealedTargetId}
             revealedCount={revealedCount}
             onVote={castVote}
-          />
-        )}
-
-        {/* Voting Status */}
-        {gameStatus === 'voting' && (
-          <VotingStatus
-            activePlayers={activePlayers}
-            getVoteCount={getVoteCount}
-            allVotesIn={allVotesIn}
-            hasVoted={hasVoted()}
-            cancelVote={cancelVote}
-            revealedTargetId={revealedTargetId}
-            revealedCount={revealedCount}
-            players={players}
           />
         )}
       </div>
